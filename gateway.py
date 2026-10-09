@@ -15,10 +15,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE_DIR, "gateway_state.json")
 LOG_FILE = os.path.join(BASE_DIR, "logs", "gateway.jsonl")
 GATEWAY_API_KEY = os.environ.get("GATEWAY_API_KEY", "")
-# Size-based rotation of logs/gateway.jsonl: when it reaches LOG_MAX_BYTES it becomes gateway.jsonl.1 (older ones shift
-# up to .N); anything beyond LOG_BACKUPS files is deleted. Defaults keep at most ~60 MB of log (10 MB x 6 files).
-LOG_MAX_BYTES = int(float(os.environ.get("GATEWAY_LOG_MAX_MB", "10")) * 1024 * 1024)
-LOG_BACKUPS = max(1, int(os.environ.get("GATEWAY_LOG_BACKUPS", "5")))
+# Request log: logs/gateway.jsonl is the active log and never grows beyond LOG_MAX_BYTES. When the next line would not
+# fit, the file is renamed (atomic, no copying) into logs/archive/ and a fresh active log starts. Archived files are
+# deleted only once they are older than LOG_RETENTION_DAYS (0 = keep forever).
+LOG_MAX_BYTES = int(float(os.environ.get("GATEWAY_LOG_MAX_MB", "6")) * 1024 * 1024)
+LOG_RETENTION_DAYS = max(0.0, float(os.environ.get("GATEWAY_LOG_RETENTION_DAYS", "180")))
+LOG_ARCHIVE_DIR = os.path.join(os.path.dirname(LOG_FILE), "archive")
+LOG_CLEANUP_INTERVAL_SECONDS = 24 * 3600
 
 if not GATEWAY_API_KEY:
     raise RuntimeError(
@@ -33,19 +36,51 @@ session_locks = claude_client.SessionLockRegistry()
 
 
 _log_lock = threading.Lock()
+_cleanup_running = threading.Lock()
+_last_cleanup = 0.0
 
 
-def _rotate_log_if_needed():
+def _archive_active_log():
+    """Move the active log into the archive folder. A rename on the same filesystem is atomic and instant, so no log
+    line can be lost or half-copied. On any failure the active log is simply left in place and keeps being appended to."""
     try:
-        if os.path.getsize(LOG_FILE) < LOG_MAX_BYTES:
-            return
+        os.makedirs(LOG_ARCHIVE_DIR, exist_ok=True)
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        dest = os.path.join(LOG_ARCHIVE_DIR, f"gateway-{stamp}.jsonl")
+        n = 0
+        while os.path.exists(dest):
+            n += 1
+            dest = os.path.join(LOG_ARCHIVE_DIR, f"gateway-{stamp}-{n}.jsonl")
+        os.rename(LOG_FILE, dest)
     except OSError:
+        pass
+
+
+def _cleanup_archive():
+    """Delete archived logs whose last write is older than the retention period."""
+    try:
+        if LOG_RETENTION_DAYS > 0:
+            cutoff = time.time() - LOG_RETENTION_DAYS * 86400
+            for name in os.listdir(LOG_ARCHIVE_DIR):
+                path = os.path.join(LOG_ARCHIVE_DIR, name)
+                if name.startswith("gateway-") and name.endswith(".jsonl") and os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+    except OSError:
+        pass
+    finally:
+        _cleanup_running.release()
+
+
+def _maybe_start_cleanup(force=False):
+    """Run the retention cleanup in a background thread at most once per day (and once at startup), so it never
+    delays a request."""
+    global _last_cleanup
+    now = time.monotonic()
+    if not force and now - _last_cleanup < LOG_CLEANUP_INTERVAL_SECONDS:
         return
-    for i in range(LOG_BACKUPS - 1, 0, -1):
-        src = f"{LOG_FILE}.{i}"
-        if os.path.exists(src):
-            os.replace(src, f"{LOG_FILE}.{i + 1}")
-    os.replace(LOG_FILE, f"{LOG_FILE}.1")
+    if _cleanup_running.acquire(blocking=False):
+        _last_cleanup = now
+        threading.Thread(target=_cleanup_archive, daemon=True).start()
 
 
 def log_event(**fields):
@@ -53,9 +88,18 @@ def log_event(**fields):
     line = json.dumps(fields) + "\n"
     with _log_lock:
         os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-        _rotate_log_if_needed()
+        try:
+            size = os.path.getsize(LOG_FILE)
+        except OSError:
+            size = 0
+        if size > 0 and size + len(line.encode("utf-8")) > LOG_MAX_BYTES:
+            _archive_active_log()
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(line)
+    _maybe_start_cleanup()
+
+
+_maybe_start_cleanup(force=True)
 
 
 def read_state():

@@ -6,17 +6,16 @@ import argparse
 import glob
 import json
 import os
-import re
 import time
 
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "gateway.jsonl")
+ARCHIVE_DIR = os.path.join(os.path.dirname(LOG_FILE), "archive")
 
 
 def iter_log_lines():
-    """Lines from gateway.jsonl and its rotated copies (gateway.jsonl.1, .2, ...), oldest first."""
-    rotated = [p for p in glob.glob(LOG_FILE + ".*") if re.fullmatch(r"\d+", p[len(LOG_FILE) + 1:])]
-    rotated.sort(key=lambda p: int(p.rsplit(".", 1)[1]), reverse=True)
-    for path in rotated + [LOG_FILE]:
+    """Lines from the archived logs (logs/archive/gateway-<UTC time>.jsonl, oldest first), then the active gateway.jsonl."""
+    archived = sorted(glob.glob(os.path.join(ARCHIVE_DIR, "gateway-*.jsonl")))
+    for path in archived + [LOG_FILE]:
         if os.path.isfile(path):
             with open(path, "r", encoding="utf-8") as f:
                 yield from f

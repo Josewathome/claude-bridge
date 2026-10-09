@@ -95,9 +95,11 @@ All of these are implemented in the code:
 - **Input validation** on `model` (must look like `claude-...`) and `effort` (`low|medium|high|xhigh|max`).
 - **Fail-closed auth**: the process refuses to start if `GATEWAY_API_KEY` is empty.
 - **Health endpoint** reporting whether the `claude` binary and stored credentials are present.
-- **Log rotation**: `logs/gateway.jsonl` rotates by size and keeps a fixed number of backups, so disk use is bounded
-  (default about 60 MB).
-- **Usage summary script** over the JSONL log, including its rotated files.
+- **Log rotation and archiving**: the active `logs/gateway.jsonl` is capped at 6 MB (configurable). When the next line
+  would not fit, the file is renamed into `logs/archive/gateway-<UTC timestamp>.jsonl` (an atomic rename, so no line is
+  lost) and a new active log starts. Archives are deleted only after the retention period (default 180 days,
+  configurable), by a background check at startup and at most once a day.
+- **Usage summary script** over the active log and all archived logs.
 
 ## Technology stack
 
@@ -151,8 +153,8 @@ Configuration is read from environment variables, normally supplied through `.en
 | `GATEWAY_HOST` | no | `127.0.0.1` | Interface uvicorn binds to (also used by `toggle.py` / `test_client.py` to find the gateway). |
 | `GATEWAY_PORT` | no | `8787` | TCP port. |
 | `BRIDGE_DEFAULT_MODEL` | no | `claude-sonnet-5` | Model used when a request has no `model`. |
-| `GATEWAY_LOG_MAX_MB` | no | `10` | Size at which `logs/gateway.jsonl` is rotated. |
-| `GATEWAY_LOG_BACKUPS` | no | `5` | Rotated files kept (`gateway.jsonl.1` ... `.N`, minimum 1); older ones are deleted. |
+| `GATEWAY_LOG_MAX_MB` | no | `6` | Maximum size of the active log `logs/gateway.jsonl`; at that size it is archived and a new one starts. |
+| `GATEWAY_LOG_RETENTION_DAYS` | no | `180` | Days archived logs in `logs/archive/` are kept before deletion (about 6 months). `0` keeps them forever. |
 
 Format notes: no quotes and no inline comments in `.env`. `run.sh` sources the file, but `toggle.py` and
 `test_client.py` parse it by hand and would keep quote characters in the value.
@@ -236,7 +238,7 @@ Successful responses contain `success`, `response`, `session_id`, `cost_usd`, `d
 ./toggle.py status     # show kill switch state (also the default with no argument)
 ./toggle.py off        # reject all /chat calls with 503
 ./toggle.py on         # accept them again
-./usage_summary.py                       # totals from logs/gateway.jsonl and its rotated files
+./usage_summary.py                       # totals from the active log and logs/archive/
 ./usage_summary.py --since 2026-08-26    # only on/after a UTC date
 ```
 
@@ -280,7 +282,7 @@ briefly disables and re-enables the kill switch, so it interrupts any other clie
   a public interface), restrict the port with a firewall, and use an SSH tunnel or a TLS reverse proxy for anything
   crossing an untrusted network. Do not publish your server's IP addresses or hostnames in issues, logs, or docs.
 - **`/health` requires no key** and reveals whether the CLI binary and credentials are present.
-- **Logs** (`logs/gateway.jsonl` and its rotated copies) do not store prompts or responses, but do record session IDs, costs, token counts,
+- **Logs** (`logs/gateway.jsonl` and `logs/archive/`) do not store prompts or responses, but do record session IDs, costs, token counts,
   tool names, and error text (which can quote CLI output). Uvicorn logs include client IP addresses. Redact before
   sharing.
 - **Session transcripts** written by the CLI under `~/.claude/projects/` do contain full conversations. `DELETE
@@ -290,8 +292,8 @@ briefly disables and re-enables the kill switch, so it interrupts any other clie
 
 ## Limitations
 
-- Log rotation drops the oldest data: usage totals only cover what is still on disk (raise `GATEWAY_LOG_BACKUPS`
-  or archive `gateway.jsonl.N` files yourself if you need longer history).
+- Archived logs older than `GATEWAY_LOG_RETENTION_DAYS` are deleted for good, so usage totals only cover what is
+  still on disk. Raise the value (or set it to `0`) for longer history; archives are uncompressed.
 - Proof of concept: no TLS, no per-client keys, no rate limiting, no request queue limits, single process.
 - All requests that omit `session_id` share one lock, so they run **one at a time**; concurrency exists only across
   different session IDs.
