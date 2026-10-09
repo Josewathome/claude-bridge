@@ -1,0 +1,25 @@
+# Secrets and local configuration - never commit
+.env
+.env.*
+!.env.example
+
+# Python environments and caches
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Runtime data: request logs (session IDs, costs, error text) and kill-switch state
+logs/
+gateway_state.json
+
+# Scratch directory the claude CLI runs in. Keep the directory (the gateway needs
+# it to exist) but not anything the CLI writes into it.
+cli_workdir/*
+!cli_workdir/.gitkeep
+
+# Editor / OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
