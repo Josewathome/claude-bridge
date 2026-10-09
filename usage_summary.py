@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Summarize claude-bridge's gateway.jsonl: requests, cost, tokens, models used.
 
 Usage: ./usage_summary.py [--since YYYY-MM-DD]
