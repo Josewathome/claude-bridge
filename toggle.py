@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Flip the gateway kill switch without needing curl/the API key by hand.
 
 Usage: ./toggle.py on|off|status
