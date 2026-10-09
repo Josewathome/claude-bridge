@@ -300,3 +300,14 @@ briefly disables and re-enables the kill switch, so it interrupts any other clie
 - Sessions are only resumable on the machine/user account where the transcript exists.
 - `test_client.py` and `usage_summary.py` are simple scripts: no CLI flags beyond those documented, and no tests
   that run without a live gateway and CLI.
+
+## License
+
+Claude Bridge is released under the [PolyForm Noncommercial License 1.0.0](LICENSE)
+(`PolyForm-Noncommercial-1.0.0`). In short: you may use, modify and share it for noncommercial purposes
+(personal use, research, education, hobby projects, and certain noncommercial organizations, as defined in the
+license). **Commercial use requires separate permission**: contact the repository owner through their GitHub
+profile or open an issue to request a commercial license.
+
+This is a source-available license, not an OSI-approved open-source license. The software is provided as is, without
+warranty; see the license text for the full terms.
