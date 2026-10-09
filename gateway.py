@@ -1,6 +1,7 @@
 import hmac
 import json
 import os
+import threading
 import time
 import uuid
 
@@ -14,6 +15,10 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE_DIR, "gateway_state.json")
 LOG_FILE = os.path.join(BASE_DIR, "logs", "gateway.jsonl")
 GATEWAY_API_KEY = os.environ.get("GATEWAY_API_KEY", "")
+# Size-based rotation of logs/gateway.jsonl: when it reaches LOG_MAX_BYTES it becomes gateway.jsonl.1 (older ones shift
+# up to .N); anything beyond LOG_BACKUPS files is deleted. Defaults keep at most ~60 MB of log (10 MB x 6 files).
+LOG_MAX_BYTES = int(float(os.environ.get("GATEWAY_LOG_MAX_MB", "10")) * 1024 * 1024)
+LOG_BACKUPS = max(1, int(os.environ.get("GATEWAY_LOG_BACKUPS", "5")))
 
 if not GATEWAY_API_KEY:
     raise RuntimeError(
@@ -27,11 +32,30 @@ app = FastAPI(title="claude-bridge (PoC)")
 session_locks = claude_client.SessionLockRegistry()
 
 
+_log_lock = threading.Lock()
+
+
+def _rotate_log_if_needed():
+    try:
+        if os.path.getsize(LOG_FILE) < LOG_MAX_BYTES:
+            return
+    except OSError:
+        return
+    for i in range(LOG_BACKUPS - 1, 0, -1):
+        src = f"{LOG_FILE}.{i}"
+        if os.path.exists(src):
+            os.replace(src, f"{LOG_FILE}.{i + 1}")
+    os.replace(LOG_FILE, f"{LOG_FILE}.1")
+
+
 def log_event(**fields):
     fields.setdefault("timestamp", time.time())
-    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(fields) + "\n")
+    line = json.dumps(fields) + "\n"
+    with _log_lock:
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        _rotate_log_if_needed()
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line)
 
 
 def read_state():
