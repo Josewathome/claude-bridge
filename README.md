@@ -25,6 +25,8 @@ shells out to the `claude` binary.
 
 ## How it works
 
+![claude-bridge architecture: scripts call gateway.py, which runs the Claude Code CLI through claude_client.py](docs/architecture.png)
+
 ```
   your scripts / services
           |  HTTP + X-Gateway-Api-Key
