@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import hmac
 import json
 import os
@@ -33,6 +35,13 @@ if not GATEWAY_API_KEY:
 app = FastAPI(title="claude-bridge (PoC)")
 
 session_locks = claude_client.SessionLockRegistry()
+
+# At most this many claude processes run at once, across all callers (memory, and the shared plan's rate limits).
+# Each request is its own CLI process with its own new (or explicitly resumed) session, so concurrent requests never
+# see each other's conversation; two requests for the SAME session_id still run one at a time (per-session lock).
+# Waiters are served first come, first served. 1 = strictly one request at a time.
+MAX_CONCURRENT = max(1, int(os.environ.get("BRIDGE_MAX_CONCURRENT", "2")))
+_concurrency = asyncio.Semaphore(MAX_CONCURRENT)
 
 
 _log_lock = threading.Lock()
@@ -148,6 +157,7 @@ def health():
         "gateway_enabled": state.get("enabled", True),
         "claude_binary_found": claude_client.claude_binary_available(),
         "credentials_present": claude_client.credentials_present(),
+        "max_concurrent": MAX_CONCURRENT,
     }
 
 
@@ -204,8 +214,11 @@ async def chat(req: ChatRequest, x_gateway_api_key: str = Header(default=None)):
 
     log_event(event="request_received", request_id=request_id, session_id=req.session_id)
 
-    lock = await session_locks.get_lock(req.session_id)
-    async with lock:
+    # Session lock first, then a slot: a request waiting for its own session never holds a slot others could use.
+    lock = await session_locks.get_lock(req.session_id) if req.session_id else contextlib.nullcontext()
+    received = time.monotonic()
+    async with lock, _concurrency:
+        queue_ms = int((time.monotonic() - received) * 1000)
         try:
             timeout = req.timeout_seconds or claude_client.DEFAULT_TIMEOUT_SECONDS
             result = await claude_client.run_claude(
@@ -261,6 +274,7 @@ async def chat(req: ChatRequest, x_gateway_api_key: str = Header(default=None)):
         request_id=request_id,
         session_id=returned_session_id,
         duration_ms=result.get("_duration_ms"),
+        queue_ms=queue_ms,
         cost_usd=result.get("total_cost_usd"),
         num_turns=result.get("num_turns"),
         input_tokens=usage.get("input_tokens"),

@@ -65,7 +65,8 @@ Components:
 1. The `X-Gateway-Api-Key` header is compared (constant-time) with `GATEWAY_API_KEY`; mismatch gives `401`.
 2. If the kill switch is off (`gateway_state.json` has `"enabled": false`), the request gets `503`.
 3. A lock is taken for the request's `session_id` so two requests for the same session never run concurrently.
-   Requests without a `session_id` share a single lock (see [Limitations](#limitations)).
+   Requests without a `session_id` need no session lock. At most `BRIDGE_MAX_CONCURRENT` requests (default 2) then
+   run at once across all callers; further requests wait, first come first served (`queue_ms` in the log).
 4. `claude_client.run_claude()` launches:
    `claude --tools "" --strict-mcp-config -p --output-format json` plus, depending on the request,
    `--safe-mode` (only when no `mcp_config` is given), `--resume <session_id>`, `--mcp-config <json>
@@ -93,7 +94,8 @@ All of these are implemented in the code:
 - **Usage reporting**: cost (USD), duration, turns, input/output/cache tokens, and per-model usage in every response
   and in the log.
 - **Kill switch**: `/admin/enable`, `/admin/disable`, `/admin/status`, and `toggle.py`. State survives restarts.
-- **Per-session serialization** via asyncio locks.
+- **Per-session serialization** via asyncio locks, and a global cap on concurrent `claude` processes
+  (`BRIDGE_MAX_CONCURRENT`, default 2; `1` = strictly one request at a time). `/health` reports the cap.
 - **Input validation** on `model` (must look like `claude-...`) and `effort` (`low|medium|high|xhigh|max`).
 - **Fail-closed auth**: the process refuses to start if `GATEWAY_API_KEY` is empty.
 - **Health endpoint** reporting whether the `claude` binary and stored credentials are present.
@@ -297,8 +299,10 @@ briefly disables and re-enables the kill switch, so it interrupts any other clie
 - Archived logs older than `GATEWAY_LOG_RETENTION_DAYS` are deleted for good, so usage totals only cover what is
   still on disk. Raise the value (or set it to `0`) for longer history; archives are uncompressed.
 - Proof of concept: no TLS, no per-client keys, no rate limiting, no request queue limits, single process.
-- All requests that omit `session_id` share one lock, so they run **one at a time**; concurrency exists only across
-  different session IDs.
+- Up to `BRIDGE_MAX_CONCURRENT` `claude` processes share one login (`~/.claude/.credentials.json`) and
+  `~/.claude.json`. Concurrent CLI processes have known races on OAuth token refresh (one can be logged out) and on
+  that config file. A long-lived token (`claude setup-token`) avoids the refresh race; set the cap to `1` to
+  return to one request at a time.
 - Linux-only as written; the CLI path is hard-coded to `~/.local/bin/claude`.
 - Depends on an external, evolving CLI: behaviour of flags such as `--safe-mode` and `--resume` (and the transcript
   format used for `tools_called` / `reasoning_text`) can change between Claude Code versions. Tested with 2.1.295.
